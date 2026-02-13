@@ -1,106 +1,76 @@
 #include <stdlib.h>
 #include <malloc.h>
+#include <string.h>
 #include <stdio.h>
 #include <math.h>
 #include <mpi.h>
 
-#define SIZER 1000
-const long int N = 4000;
+#define RANGE_MODULE 1000
+#define N 1000
 
-typedef unsigned long ul;
-typedef unsigned long long ull;
-
-int num_rows_diagram_p1 = 4;
-int num_cols_diagram_p2 = 2;
-
-void FreeMatrix(int** matrix, ull num_rows, ull num_cols) {
-    for (int iter_free = 0; iter_free < num_rows; ++iter_free) {
-        if (matrix[iter_free] == NULL) {
-            perror("Memory error! Type 3");
-            exit(-1);
-        }
-        free(matrix[iter_free]);
+void FillVectors(int* vector_a, int* vector_b) {
+    for (int i = 0; i < N; i++) {
+        vector_a[i] = i % RANGE_MODULE;
     }
-    free(matrix);
-}
-
-void AllocMatrixMemory(int** matrix, ul num_rows, ul num_cols) {
-    matrix = (int**)malloc(num_rows * sizeof(int*));
-    for (int iter_fill = 0; iter_fill < num_rows; ++iter_fill) {
-        matrix[iter_fill] = (int*)malloc(num_cols * sizeof(int));
+    for (int i = 0; i < N; i++) {
+        vector_b[i] = (N - i) % RANGE_MODULE;
     }
 }
 
-int randInt(int min, int max) {
-    int range = (max - min);
-    int div = RAND_MAX / range;
-    return min + (rand() / div);
-}
+int SequentialProgram(int argc, char **argv) {
+    printf("I'm sequential program :) \n");
 
-void GenerateMatrix(int** matrix, ull num_rows, ull num_cols) {
-    if (matrix == NULL) {
-        perror("Memory error! Type 0");
-        exit(-1);
-    }
-    for (int i = 0; i < num_rows; ++i) {
-        if (matrix[i] == NULL) {
-            perror("Memory error! Type 1");
-            exit(-1);
-        }
-        for (int j = 0; j < num_cols; ++j) {
-            matrix[i][j] = randInt(-100, 100);
-        }
-    }
-}
+    MPI_Init(&argc, &argv);
+    double time_start = MPI_Wtime();
 
-int** GetMatrixLocalLinesPtrByRank(int** matrix, int rank, ul local_A_rows, ull n2, int p1, int p2) {
-    ul diagram_x = rank % p2;
-    ul diagram_y = rank % p1;
-    ul start_elem_matrix_A = SIZER * diagram_y * n2;
-    ul num_elem_local_A = SIZER * n2;
+    unsigned long long sum = 0;
+    int *vector_a = (int*) malloc(N * sizeof(int));
+    int *vector_b = (int*) malloc(N * sizeof(int));
+    FillVectors(vector_a, vector_b);
 
-    int** sendbuf;
-//    for (ul iter_fill = start_elem_matrix_A; iter_fill < start_elem_matrix_A + num_elem_local_A; ++iter_fill) {
-//
-//    }
-}
+    for (int i = 0; i < N; i++)
+        for(int j = 0; j < N; j++)
+            sum += vector_a[i] * vector_b[j];
 
-int main() {
-    MPI_Init(NULL, NULL);
-    int rank;
-    int count_proc = num_cols_diagram_p2 * num_rows_diagram_p1;
+    double time_end = MPI_Wtime();
+    printf("sum = %lld \ntime: %f \n", sum, time_end - time_start);
 
-    MPI_Comm_size(MPI_COMM_WORLD, &count_proc);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-//----------------------------------------------Counting-n1,-n2-and-n3--------------------------------------------------
-    ull num_rows_matrix_A_n1, num_cols_matrix_A_rows_matrix_B_n2, num_cols_matrix_B_n3;
-    num_rows_matrix_A_n1 = num_rows_diagram_p1 * SIZER;
-    num_cols_matrix_A_rows_matrix_B_n2 = SIZER;
-    num_cols_matrix_B_n3 = num_cols_diagram_p2 * SIZER;
-//----------------------------------------Memory-allocate-and-generate-matrices-----------------------------------------
-
-    ul local_A_rows = SIZER;
-    int** local_matrix_A = NULL;
-    AllocMatrixMemory(local_matrix_A, local_A_rows, num_cols_matrix_A_rows_matrix_B_n2);
-
-    ul local_B_columns = SIZER;
-    int** local_matrix_B = NULL;
-    AllocMatrixMemory(local_matrix_B, num_cols_matrix_A_rows_matrix_B_n2, local_B_columns);
-
-    if (rank == 0) {
-        int** matrix_A = NULL;
-        AllocMatrixMemory(matrix_A, num_rows_matrix_A_n1, num_cols_matrix_A_rows_matrix_B_n2);
-
-        int** matrix_B = NULL;
-        AllocMatrixMemory(matrix_B, num_cols_matrix_A_rows_matrix_B_n2, num_cols_matrix_B_n3);
-
-        GenerateMatrix(matrix_A, num_rows_matrix_A_n1, num_cols_matrix_A_rows_matrix_B_n2);
-        GenerateMatrix(matrix_B, num_cols_matrix_A_rows_matrix_B_n2, num_cols_matrix_B_n3);
-
-
-    }
-//----------------------------------------------------------------------------------------------------------------------
-
-    FreeMatrix(local_matrix_A, SIZER, num_cols_matrix_A_rows_matrix_B_n2);
+    free(vector_a);
+    free(vector_b);
+    MPI_Finalize();
     return 0;
+}
+
+int ParallelPointToPoint (int argc, char **argv) {
+    printf("I'm parallel point to point program ;) \n");
+    return 0;
+}
+
+int ParallelGroupCommunications (int argc, char **argv) {
+    printf("I'm parallel group program :D \n");
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    int ret;
+    if (argc > 1) {
+        if (strcmp(argv[1], "-pg") == 0) {
+            ret = ParallelGroupCommunications(argc, argv);
+        } else if (strcmp(argv[1], "-pp") == 0) {
+            ret = ParallelPointToPoint(argc, argv);
+        } else if (strcmp(argv[1], "-s") == 0) {
+            ret = SequentialProgram(argc, argv);
+        } else {
+            printf("sequential program is starting \nTo run sequential one add flag -s "
+                   "\nTo run parallel point to point program add -pp \nTo run parallel group "
+                   "communication program type -pg\n");
+            ret = SequentialProgram(argc, argv);
+        }
+    } else {
+        ret = SequentialProgram(argc, argv);
+        printf("To run sequential one add flag -s\n"
+               "To run parallel point to point program add -pp\n"
+               "To run parallel group communication program type -pg\n");
+    }
+    return ret;
 }
