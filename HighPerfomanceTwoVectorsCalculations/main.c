@@ -5,6 +5,8 @@
 
 #define RANGE_MODULE 100
 #define ROOT_PROCESS_NUMBER 0
+#define TRUE 0
+#define NUMBER_SYSTEM_BASE_10 10
 int N;
 
 void FillFullVectors(int *full_a, int *full_b) {
@@ -20,7 +22,8 @@ int Minimum(int a, int b) {
 //======================================================================================================================
 //=============================================Sequential=program=======================================================
 //======================================================================================================================
-int SequentialProgram(void) {
+
+int SequentialProgram() {
     printf("Sequential program started\n");
 
     unsigned long sum = 0;
@@ -46,7 +49,7 @@ int SequentialProgram(void) {
 //======================================================================================================================
 //=========================================Parallel=point=to=point=program==============================================
 //======================================================================================================================
-int ParallelPointToPoint(void) {
+int ParallelPointToPoint() {
 
     int rank, num_processes;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -117,7 +120,7 @@ int ParallelPointToPoint(void) {
         for (int source_process = 1; source_process < num_processes; source_process++) {
             unsigned long received_value;
             MPI_Recv(&received_value, 1, MPI_UNSIGNED_LONG, source_process,
-                     source_process, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                     MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             total_sum += received_value;
         }
         printf("Sum = %lu\n", total_sum);
@@ -125,7 +128,7 @@ int ParallelPointToPoint(void) {
         printf("Number of processes = %d\n", num_processes);
     } else {
         MPI_Send(&local_sum, 1, MPI_UNSIGNED_LONG,
-                 ROOT_PROCESS_NUMBER, rank, MPI_COMM_WORLD);
+                 ROOT_PROCESS_NUMBER, MPI_ANY_TAG, MPI_COMM_WORLD);
     }
 
     free(local_a);
@@ -135,7 +138,7 @@ int ParallelPointToPoint(void) {
 //======================================================================================================================
 // =====================================Parallel=group=communications=program===========================================
 //======================================================================================================================
-int ParallelGroupCommunications(void) {
+int ParallelGroupCommunications() {
 
     int rank, num_processes;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -231,12 +234,16 @@ int main(int argc, char *argv[]) {
 
     //---------------------------------Read-N-from-command-prompt-arguments---------------------------------------------
 
-    int default_N = 100000;
+    int default_N = 10000;
     if (argc > 2) {
-        if (rank == 0) {
-            char *end_pointer;
-            long val = strtol(argv[2], &end_pointer, 10);
-            if (end_pointer == argv[2] || *end_pointer != '\0' || val <= 0) {
+        if (rank == ROOT_PROCESS_NUMBER) {
+            char *arcv_N_values_digits_end_pointer;
+            long val = strtol(argv[2], &arcv_N_values_digits_end_pointer,
+                              NUMBER_SYSTEM_BASE_10);
+
+            if (arcv_N_values_digits_end_pointer == argv[2] || // check if first symbol is not digit-symbol at all
+            *arcv_N_values_digits_end_pointer != '\0' || val <= 0) { // Invalid value, invalid symbol or strtol - error.
+
                 printf("Invalid N value, using default %d\n", default_N);
                 N = default_N;
             } else {
@@ -253,25 +260,26 @@ int main(int argc, char *argv[]) {
 
     int ret = 0;
     if (argc > 1) {
-        if (strcmp(argv[1], "-s") == 0) {
-            if (rank == 0) ret = SequentialProgram();
-        } else if (strcmp(argv[1], "-pp") == 0) {
+        if (strcmp(argv[1], "-s") == TRUE) {
+            if (rank == ROOT_PROCESS_NUMBER) ret = SequentialProgram();
+        } else if (strcmp(argv[1], "-pp") == TRUE) {
             ret = ParallelPointToPoint();
-        } else if (strcmp(argv[1], "-pg") == 0) {
+        } else if (strcmp(argv[1], "-pg") == TRUE) {
             ret = ParallelGroupCommunications();
         } else {
-            if (rank == 0) {
+            if (rank == ROOT_PROCESS_NUMBER) {
                 printf("Unknown flag. Usage:\n");
-                printf("  %s -s              (sequential)\n", argv[0]);
-                printf("  %s -pp [N]         (point-to-point parallel)\n", argv[0]);
-                printf("  %s -pg [N]         (group communications parallel)\n", argv[0]);
-                printf("  N – vector size (positive integer, default %d)\n", default_N);
+                printf("  %s [N] -s           (sequential)\n", argv[0]);
+                printf("  %s [N] -pp          (point-to-point parallel)\n", argv[0]);
+                printf("  %s [N] -pg          (group communications parallel)\n", argv[0]);
+                printf("  N - vector size (positive integer, default %d)\n", default_N);
             }
         }
     } else {
-        if (rank == 0) {
-            printf("No flags specified. Running sequential by default.\n");
-            ret = SequentialProgram();
+        if (rank == ROOT_PROCESS_NUMBER) {
+            printf("No flags specified. Running sequential by default.\n"
+                   "N is equal to %d\n", default_N);
+            ret = ParallelPointToPoint();
         }
     }
 
