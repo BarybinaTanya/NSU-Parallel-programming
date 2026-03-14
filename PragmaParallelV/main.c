@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 #include <mpi.h>
 
 #define RANGE_MODULE 10
@@ -13,26 +12,31 @@
 #define STOP_CRITERIA_INIT_VALUE 100
 #define EPSILON_DEFAULT_VALUE 0.00001
 #define GLOBAL_N_DEFAULT_VALUE 10000
+
 double epsilon;
 int global_N;
 int global_matrix_row;
 int global_matrix_column;
 
-void FillVector(double** vector_x, short fill_zero_flag) {
+//int Minimum(int a, int b) {
+//    return (a < b) ? a : b;
+//}
+
+void FillVector(double** vector_x, short fill_zero_flag, int vector_size) {
     if (fill_zero_flag == FILL_WITH_ZEROS) {
-        for (int i = 0; i < global_N; i++) {
-            *vector_x[i] = 0;
+        for (int i = 0; i < vector_size; i++) {
+            (*vector_x)[i] = 0;
         }
     } else {
-        for (int i = 0; i < global_N; i++) {
-            *vector_x[i] = (global_N - i) % RANGE_MODULE;
+        for (int i = 0; i < vector_size; i++) {
+            (*vector_x)[i] = (global_N - i) % RANGE_MODULE;
         }
     }
 
 }
 
-void AllocateVector(double** vector) {
-    *vector = (double*)malloc(global_N * sizeof(double));
+void AllocateVector(double** vector, int vector_size) {
+    *vector = (double*)malloc(vector_size * sizeof(double));
 }
 
 void FillMatrix(double*** full_matrix_A) {
@@ -40,10 +44,10 @@ void FillMatrix(double*** full_matrix_A) {
         for (global_matrix_column = 0; global_matrix_column < global_N; ++global_matrix_column) {
 
             if (global_matrix_row == global_matrix_column) {
-                *full_matrix_A[global_matrix_row][global_matrix_column] =
+                (*full_matrix_A)[global_matrix_row][global_matrix_column] =
                         global_N + (global_matrix_column % RANGE_MODULE);
             } else {
-                *full_matrix_A[global_matrix_row][global_matrix_column] =
+                (*full_matrix_A)[global_matrix_row][global_matrix_column] =
                         global_matrix_column % RANGE_MODULE;
             }
         }
@@ -52,35 +56,28 @@ void FillMatrix(double*** full_matrix_A) {
 
 void FreeMatrix(double*** full_matrix_A) {
     for (global_matrix_row = 0; global_matrix_row < global_N; global_matrix_row++) {
-        free(*full_matrix_A[global_matrix_row]);
+        free((*full_matrix_A)[global_matrix_row]);
     }
     free(*full_matrix_A);
 }
 
-void AllocateMatrix(double*** full_matrix_A) {
-    *full_matrix_A = (double** )malloc(global_N * sizeof(double*));
-    for (int i = 0; i < global_N; ++i) {
-        *full_matrix_A[i] = (double*)malloc(global_N * sizeof(double));
+void AllocateMatrix(double*** full_matrix_A, int num_rows) {
+    *full_matrix_A = (double** )malloc(num_rows * sizeof(double*));
+    for (int i = 0; i < num_rows; ++i) {
+        (*full_matrix_A)[i] = (double*)malloc(global_N * sizeof(double));
     }
 }
 
-int Minimum(int a, int b) {
-    return (a < b) ? a : b;
-}
-
-double* SubtractVectorFromVector (const double* minuend_vector, const double* subtrahend_vector) {
-    double* res_vector;
-    AllocateVector(&res_vector);
-    for (int index = 0; index < global_N; ++index) {
+void SubtractVectorFromVector (const double* minuend_vector, const double* subtrahend_vector,
+                               double* res_vector, int vectors_size) {
+    for (int index = 0; index < vectors_size; ++index) {
         res_vector[index] = minuend_vector[index] - subtrahend_vector[index];
     }
-    return res_vector;
 }
 
-double* MultiplyLocalMatrixToVector(int local_matrix_rows_count, double** local_matrix_A, const double* vector) {
-    double *res_vector;
-    AllocateVector(&res_vector);
-    FillVector(&res_vector, FILL_WITH_ZEROS);
+void MultiplyLocalMatrixToVector(int local_matrix_rows_count, double** local_matrix_A,
+                                    const double* vector, double* res_vector) {
+    FillVector(&res_vector, FILL_WITH_ZEROS, local_matrix_rows_count);
 
     for (int local_matrix_row_iter = 0; local_matrix_row_iter <
     local_matrix_rows_count; ++local_matrix_row_iter) {
@@ -90,7 +87,6 @@ double* MultiplyLocalMatrixToVector(int local_matrix_rows_count, double** local_
                     local_matrix_A[local_matrix_row_iter][vector_row_iter] * vector[vector_row_iter];
         }
     }
-    return res_vector;
 }
 
 double ScalarProduct(const double* vector_1, const double* vector_2) {
@@ -101,14 +97,10 @@ double ScalarProduct(const double* vector_1, const double* vector_2) {
     return product;
 }
 
-double* MultiplyVectorToScalar(const double* vector, double scalar) {
-    double* vector_scalar;
-    AllocateVector(&vector_scalar);
-
+void MultiplyVectorToScalar(const double* vector, double* res_vector, double scalar) {
     for (int iter = 0; iter < global_N; ++iter) {
-        vector_scalar[iter] = vector[iter] * scalar;
+        res_vector[iter] = vector[iter] * scalar;
     }
-    return vector_scalar;
 }
 //======================================================================================================================
 //=============================================Sequential=program=======================================================
@@ -117,48 +109,56 @@ int SequentialProgram() {
     printf("Sequential program started\n");
 
     double** matrixA;
-    AllocateMatrix( &matrixA);
+    int local_matrix_rows_count = global_N;
+    AllocateMatrix( &matrixA, local_matrix_rows_count);
     FillMatrix(&matrixA);
 
     double* vectorXn;
-    AllocateVector(&vectorXn);
-    FillVector(&vectorXn, FILL_WITH_ZEROS);
+    AllocateVector(&vectorXn, global_N);
+    FillVector(&vectorXn, FILL_WITH_ZEROS, global_N);
 
     double* vectorB;
-    AllocateVector(&vectorB);
-    FillVector(&vectorB, FILL_RANDOM);
+    AllocateVector(&vectorB, global_N);
+    FillVector(&vectorB, FILL_RANDOM, global_N);
 
     double* vectorAXn;
-    AllocateVector(&vectorAXn);
+    AllocateVector(&vectorAXn, local_matrix_rows_count);
 
     double* vectorYn;
-    AllocateVector(&vectorYn);
+    AllocateVector(&vectorYn, local_matrix_rows_count);
 
     double* vectorAYn;
-    AllocateVector(&vectorAYn);
+    AllocateVector(&vectorAYn, local_matrix_rows_count);
 
     double tau;
 
     double* vectorXnPlus1;
-    AllocateVector(&vectorXnPlus1);
+    AllocateVector(&vectorXnPlus1, local_matrix_rows_count);
     double stop_criteria_value = STOP_CRITERIA_INIT_VALUE;
 
+    double* vector_tauYn;
+    AllocateVector(&vector_tauYn, local_matrix_rows_count);
+
     double start = MPI_Wtime();
-    while (stop_criteria_value >= epsilon) {
-        //----------------------------------------vectorXnPlus1-calculation-------------------------------------------------
-        vectorAXn = MultiplyLocalMatrixToVector(global_N, matrixA, vectorXn);
-        vectorYn = SubtractVectorFromVector(vectorAXn, vectorB);
-        vectorAYn = MultiplyLocalMatrixToVector(global_N, matrixA, vectorYn);
+    unsigned long long iterations_count = 0;
+    while (stop_criteria_value >= epsilon && iterations_count < 1000) {
+        //----------------------------------------vectorXnPlus1-calculation---------------------------------------------
+        MultiplyLocalMatrixToVector(global_N, matrixA,
+                                    vectorXn, vectorAXn);
+        // matrixA * vectorXn
+        SubtractVectorFromVector(vectorAXn, vectorB, vectorYn);
+        //vectorYn = matrixA * vectorXn - vectorB
+        MultiplyLocalMatrixToVector(global_N, matrixA,
+                                    vectorYn, vectorAYn);
         tau = (ScalarProduct(vectorYn, vectorAYn)) /
               (ScalarProduct(vectorAYn, vectorAYn));
-        vectorXnPlus1 = SubtractVectorFromVector(vectorXn,
-                                                 MultiplyVectorToScalar(vectorYn, tau));
-        //---------------------------------------stop-flag-counting-and-checking--------------------------------------------
-        double* vectorAxnMinusVectorB;
-        AllocateVector(&vectorAxnMinusVectorB);
-        vectorAxnMinusVectorB = SubtractVectorFromVector(vectorAXn, vectorB);
-        stop_criteria_value = ScalarProduct(vectorAxnMinusVectorB, vectorAxnMinusVectorB) /
+        MultiplyVectorToScalar(vectorYn, vector_tauYn, tau);
+        SubtractVectorFromVector(vectorXn, vector_tauYn, vectorXnPlus1);
+        //---------------------------------------stop-flag-counting-and-checking----------------------------------------
+        SubtractVectorFromVector(vectorAXn, vectorB, vectorYn);
+        stop_criteria_value = ScalarProduct(vectorYn, vectorYn) /
                               ScalarProduct(vectorB, vectorB);
+        iterations_count++;
     }
     double end = MPI_Wtime();
     //------------------------------------------------------------------------------------------------------------------
@@ -166,6 +166,12 @@ int SequentialProgram() {
 
     free(vectorXn);
     free(vectorB);
+    free(vectorAXn);
+    free(vectorYn);
+    free(vectorAYn);
+    free(vectorXnPlus1);
+    free(vector_tauYn);
+    free(vectorAxnMinusVectorB);
     FreeMatrix(&matrixA);
     return 0;
 }
@@ -174,87 +180,7 @@ int SequentialProgram() {
 //======================================================================================================================
 int ParallelProgram() {
     printf("Parallel program started\n");
-//    int rank, num_processes;
-//    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-//    MPI_Comm_size(MPI_COMM_WORLD, &num_processes);
-//
-//    int local_N = global_N / num_processes + (rank < global_N % num_processes);
-//    double *local_a = (double*)malloc(local_N * sizeof(double));
-//    double *b = (double*)malloc(global_N * sizeof(double));
-//
-//    //---------------------Sending-vectors-a-and-b-from-root-to-others-using-group-communications-----------------------
-//
-//    if (rank == ROOT_PROCESS_NUMBER) {
-//
-//        double *full_vector_a = (double*)malloc(global_N * sizeof(double));
-//        double *full_vector_b = (double*)malloc(global_N * sizeof(double));
-//        FillVector(&full_vector_a);
-//
-//        // Preparing technical arrays for Scatter_v to cut a vector in a custom way.....................................
-//
-//        int *processes_local_Ns_array = (int*)malloc(num_processes * sizeof(int));
-//        int *processes_local_starts_array = (int*)malloc(num_processes * sizeof(int));
-//        int offset = 0;
-//        for (int i = 0; i < num_processes; i++) {
-//            processes_local_Ns_array[i] = global_N / num_processes + (i < global_N % num_processes);
-//            processes_local_starts_array[i] = offset;
-//            offset += processes_local_Ns_array[i];
-//        }
-//
-//        // Cut full_vector_a our custom way and send it to everyone else at MPI_COMM_WORLD..............................
-//
-//        MPI_Scatterv(full_vector_a, processes_local_Ns_array,
-//                     processes_local_starts_array, MPI_INT,
-//                     local_a, local_N, MPI_INT,
-//                     ROOT_PROCESS_NUMBER, MPI_COMM_WORLD);
-//
-//        // B_cast sends the buffer b to other processes, that will also put their received data
-//        // to the buffer b (in their memory, but buffer pointer is the same). Of course, buffer b must be
-//        // initialized at the root process.
-//        for (int i = 0; i < global_N; i++) b[i] = full_vector_b[i];
-//        MPI_Bcast(b, global_N, MPI_INT, ROOT_PROCESS_NUMBER, MPI_COMM_WORLD);
-//
-//        free(full_vector_a);
-//        free(full_vector_b);
-//        free(processes_local_Ns_array);
-//        free(processes_local_starts_array);
-//    }
-//
-//    else {
-//        //---------------------------Processes-receive-their-part-of-vector-a-and-full-vector-b-----------------------------
-//
-//        // Receiving Scatter_v and B_cast. The last ones arguments are absolutely the same as in the sending process.
-//        // Receiving Scatter_v buffer and cutting information are set to NULL.
-//        MPI_Scatterv(NULL, NULL, NULL, MPI_INT,
-//                     local_a, local_N, MPI_INT,
-//                     ROOT_PROCESS_NUMBER, MPI_COMM_WORLD);
-//        MPI_Bcast(b, global_N, MPI_INT, ROOT_PROCESS_NUMBER, MPI_COMM_WORLD);
-//    }
-//
-//    //------------------------------------------------Calculations------------------------------------------------------
-//
-//    double start = MPI_Wtime();
-//    unsigned long local_sum = 0;
-//    for (int i = 0; i < local_N; i++) {
-//        for (int j = 0; j < global_N; j++) {
-//            local_sum += (unsigned long)local_a[i] * b[j];
-//        }
-//    }
-//    double end = MPI_Wtime();
-//
-//    //--------------------------------------Collecting-results-using-MPI-Reduce-----------------------------------------
-//    unsigned long total_sum = 0;
-//    MPI_Reduce(&local_sum, &total_sum, 1, MPI_UNSIGNED_LONG,
-//               MPI_SUM, ROOT_PROCESS_NUMBER, MPI_COMM_WORLD);
-//
-//    if (rank == ROOT_PROCESS_NUMBER) {
-//        printf("Sum = %lu\n", total_sum);
-//        printf("Time = %f seconds\n", end - start);
-//        printf("Number of processes = %d\n", num_processes);
-//    }
-//
-//    free(local_a);
-//    free(b);
+
     return 0;
 }
 //======================================================================================================================
