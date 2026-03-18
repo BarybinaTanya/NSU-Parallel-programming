@@ -1,9 +1,10 @@
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <stdio.h>
 #include <mpi.h>
 
-#define RANGE_MODULE 10
+#define RANGE_MODULE 100
 #define ROOT_PROCESS_NUMBER 0
 #define TRUE 0
 #define NUMBER_SYSTEM_BASE_10 10
@@ -12,14 +13,36 @@
 #define STOP_CRITERIA_INIT_VALUE 100
 #define EPSILON_DEFAULT_VALUE 0.00001
 #define GLOBAL_N_DEFAULT_VALUE 10000
+#define ITERATIONS_COUNT_ALLOWED 100
 
 double epsilon;
 int global_N;
 int global_matrix_row;
 int global_matrix_column;
 
-//int Minimum(int a, int b) {
-//    return (a < b) ? a : b;
+int Minimum(int a, int b) {
+    return (a < b) ? a : b;
+}
+
+//void PrintVector(double* vector, int vectors_length) {
+//    for (int iter = 0; iter < vectors_length; ++iter) {
+//        printf("%f\n", vector[iter]);
+//    }
+//}
+
+//void FillMatrix(double*** full_matrix_A) {
+//    for (global_matrix_row = 0; global_matrix_row < global_N; global_matrix_row++) {
+//        for (global_matrix_column = 0; global_matrix_column < global_N; ++global_matrix_column) {
+//
+//            if (global_matrix_row == global_matrix_column) {
+//                (*full_matrix_A)[global_matrix_row][global_matrix_column] =
+//                        INT_MAX - (global_matrix_column % RANGE_MODULE);
+//            } else {
+//                (*full_matrix_A)[global_matrix_row][global_matrix_column] =
+//                        global_matrix_column % RANGE_MODULE;
+//            }
+//        }
+//    }
 //}
 
 void FillVector(double** vector_x, short fill_zero_flag, int vector_size) {
@@ -45,7 +68,7 @@ void FillMatrix(double*** full_matrix_A) {
 
             if (global_matrix_row == global_matrix_column) {
                 (*full_matrix_A)[global_matrix_row][global_matrix_column] =
-                        global_N + (global_matrix_column % RANGE_MODULE);
+                        global_N - (global_matrix_column % RANGE_MODULE);
             } else {
                 (*full_matrix_A)[global_matrix_row][global_matrix_column] =
                         global_matrix_column % RANGE_MODULE;
@@ -102,6 +125,12 @@ void MultiplyVectorToScalar(const double* vector, double* res_vector, double sca
         res_vector[iter] = vector[iter] * scalar;
     }
 }
+
+void CopyVector(const double* vector, double* vectors_copy, int vectors_length) {
+    for (int iterator = 0; iterator < vectors_length; ++iterator) {
+        vectors_copy[iterator] = vector[iterator];
+    }
+}
 //======================================================================================================================
 //=============================================Sequential=program=======================================================
 //======================================================================================================================
@@ -114,12 +143,15 @@ int SequentialProgram() {
     FillMatrix(&matrixA);
 
     double* vectorXn;
-    AllocateVector(&vectorXn, global_N);
-    FillVector(&vectorXn, FILL_WITH_ZEROS, global_N);
+    AllocateVector(&vectorXn, local_matrix_rows_count);
+    FillVector(&vectorXn, FILL_WITH_ZEROS, local_matrix_rows_count);
 
     double* vectorB;
     AllocateVector(&vectorB, global_N);
     FillVector(&vectorB, FILL_RANDOM, global_N);
+    vectorB[global_N - 1] += global_N * 2; // diagonal dominance of the augmented matrix
+    // of a system of linear equations. Constant 2 here means nothing - it can be easily
+    // replaced by any other integer
 
     double* vectorAXn;
     AllocateVector(&vectorAXn, local_matrix_rows_count);
@@ -130,39 +162,56 @@ int SequentialProgram() {
     double* vectorAYn;
     AllocateVector(&vectorAYn, local_matrix_rows_count);
 
-    double tau;
+    double tauN;
 
     double* vectorXnPlus1;
     AllocateVector(&vectorXnPlus1, local_matrix_rows_count);
     double stop_criteria_value = STOP_CRITERIA_INIT_VALUE;
 
-    double* vector_tauYn;
-    AllocateVector(&vector_tauYn, local_matrix_rows_count);
-
+    double* vectorTauYn;
+    AllocateVector(&vectorTauYn, local_matrix_rows_count);
     double start = MPI_Wtime();
     unsigned long long iterations_count = 0;
-    while (stop_criteria_value >= epsilon && iterations_count < 1000) {
+
+    //------------------------------------------------------------------------------------------------------------------
+    //------------------------------------------------------------------------------------------------------------------
+    while (stop_criteria_value >= epsilon && iterations_count < ITERATIONS_COUNT_ALLOWED) {
         //----------------------------------------vectorXnPlus1-calculation---------------------------------------------
         MultiplyLocalMatrixToVector(global_N, matrixA,
-                                    vectorXn, vectorAXn);
-        // matrixA * vectorXn
-        SubtractVectorFromVector(vectorAXn, vectorB, vectorYn);
+                                    vectorXn, vectorAXn); // matrixA * vectorXn = vectorAXn
+
+        SubtractVectorFromVector(vectorAXn, vectorB,
+                                 vectorYn, local_matrix_rows_count);
         //vectorYn = matrixA * vectorXn - vectorB
-        MultiplyLocalMatrixToVector(global_N, matrixA,
-                                    vectorYn, vectorAYn);
-        tau = (ScalarProduct(vectorYn, vectorAYn)) /
-              (ScalarProduct(vectorAYn, vectorAYn));
-        MultiplyVectorToScalar(vectorYn, vector_tauYn, tau);
-        SubtractVectorFromVector(vectorXn, vector_tauYn, vectorXnPlus1);
+
+        MultiplyLocalMatrixToVector(local_matrix_rows_count, matrixA,
+                                    vectorYn, vectorAYn); // matrixA * vectorYn = AYn
+
+        tauN = (ScalarProduct(vectorYn, vectorAYn)) /
+               (ScalarProduct(vectorAYn, vectorAYn)); // tauN = (Yn, AYn) / (AYn, AYn)
+
+        MultiplyVectorToScalar(vectorYn, vectorTauYn, tauN); // counting vectorTauYn
+
+        SubtractVectorFromVector(vectorXn, vectorTauYn,vectorXnPlus1,
+                                 local_matrix_rows_count); // vectorXnPlus1 = vectorXn - vectorTauYn
         //---------------------------------------stop-flag-counting-and-checking----------------------------------------
-        SubtractVectorFromVector(vectorAXn, vectorB, vectorYn);
+
         stop_criteria_value = ScalarProduct(vectorYn, vectorYn) /
-                              ScalarProduct(vectorB, vectorB);
+                              ScalarProduct(vectorB, vectorB); // |AXn - vectorB|^2 / |vectorB|^2
         iterations_count++;
+        CopyVector(vectorXnPlus1, vectorXn, local_matrix_rows_count);
     }
-    double end = MPI_Wtime();
+    if (iterations_count < ITERATIONS_COUNT_ALLOWED && stop_criteria_value < epsilon) {
+        printf("SLE solved!\n");
+    } else {
+        printf("The SLE can't be solved by this iteration method. "
+               "Too many iterations. Try to increase diagonal dominance.\n");
+    }
     //------------------------------------------------------------------------------------------------------------------
-    printf("Time = %f seconds\n", end - start);
+    //------------------------------------------------------------------------------------------------------------------
+
+    double end = MPI_Wtime();
+    printf("Time = %f seconds\n%lld iterations\n", end - start, iterations_count);
 
     free(vectorXn);
     free(vectorB);
@@ -170,17 +219,38 @@ int SequentialProgram() {
     free(vectorYn);
     free(vectorAYn);
     free(vectorXnPlus1);
-    free(vector_tauYn);
-    free(vectorAxnMinusVectorB);
+    free(vectorTauYn);
     FreeMatrix(&matrixA);
     return 0;
 }
 //======================================================================================================================
-// =====================================Parallel=program===========================================
+// =============================================Parallel=program========================================================
 //======================================================================================================================
-int ParallelProgram() {
+int ParallelProgram(int rank) {
     printf("Parallel program started\n");
+    int ranks_count;
+    MPI_Comm_size(MPI_COMM_WORLD, &ranks_count);
+    int* rank_rows_manager = (int*) malloc (ranks_count * sizeof(int));
+    int* rank_elements_counts = (int*) malloc (ranks_count * sizeof (int*));
+    int* displaces = (int*) malloc (ranks_count * sizeof (int*));
 
+    for (int iter = 0; iter < ranks_count; ++iter) {
+        rank_rows_manager[iter] = global_N / ranks_count + (iter < global_N % ranks_count);
+    }
+    for (int iter = 0; iter < ranks_count; ++iter) {
+        rank_elements_counts[iter] = rank_rows_manager[iter] * global_N;
+    }
+    for (int iter = 0; iter < ranks_count; ++iter) {
+        if (iter == 0) {
+            displaces[iter] = 0;
+        } else {
+            displaces[iter] = displaces[iter - 1] + rank_elements_counts[iter - 1]
+        }
+    }
+
+    free(rank_rows_manager);
+    free(rank_elements_counts);
+    free(displaces);
     return 0;
 }
 //======================================================================================================================
@@ -239,7 +309,7 @@ int main(int argc, char *argv[]) {
         if (strcmp(argv[1], "-s") == TRUE) {
             if (rank == ROOT_PROCESS_NUMBER) ret = SequentialProgram();
         } else if (strcmp(argv[1], "-pp") == TRUE) {
-            ret = ParallelProgram();
+            ret = ParallelProgram(rank);
         } else {
             if (rank == ROOT_PROCESS_NUMBER) {
                 printf("Unknown flag. Usage:\n");
@@ -252,7 +322,7 @@ int main(int argc, char *argv[]) {
         if (rank == ROOT_PROCESS_NUMBER) {
             printf("No flags specified. Running sequential by default.\n"
                    "global_N is equal to %d\n", default_N);
-            ret = ParallelProgram();
+            ret = SequentialProgram();
         }
     }
     MPI_Finalize();
