@@ -1,8 +1,8 @@
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
 #include <stdio.h>
 #include <mpi.h>
+#include <limits.h>
 
 #define RANGE_MODULE 100
 #define ROOT_PROCESS_NUMBER 0
@@ -13,16 +13,14 @@
 #define STOP_CRITERIA_INIT_VALUE 100
 #define EPSILON_DEFAULT_VALUE 0.00001
 #define GLOBAL_N_DEFAULT_VALUE 10000
-#define ITERATIONS_COUNT_ALLOWED 100
+#define ITERATIONS_COUNT_ALLOWED 1000
 
 double epsilon;
 int global_N;
-int global_matrix_row;
-int global_matrix_column;
 
-int Minimum(int a, int b) {
-    return (a < b) ? a : b;
-}
+//int Minimum(int a, int b) {
+//    return (a < b) ? a : b;
+//}
 
 //void PrintVector(double* vector, int vectors_length) {
 //    for (int iter = 0; iter < vectors_length; ++iter) {
@@ -62,32 +60,19 @@ void AllocateVector(double** vector, int vector_size) {
     *vector = (double*)malloc(vector_size * sizeof(double));
 }
 
-void FillMatrix(double*** full_matrix_A) {
-    for (global_matrix_row = 0; global_matrix_row < global_N; global_matrix_row++) {
-        for (global_matrix_column = 0; global_matrix_column < global_N; ++global_matrix_column) {
+void AllocateMatrixContinuously(double** matrix, int rows_number) {
+    *matrix = (double*)malloc(global_N * rows_number * sizeof(double));
+}
 
-            if (global_matrix_row == global_matrix_column) {
-                (*full_matrix_A)[global_matrix_row][global_matrix_column] =
-                        global_N - (global_matrix_column % RANGE_MODULE);
+void FillContinuousMatrix(double** matrix) {
+    for (int i = 0; i < global_N; ++i) {
+        for (int j = 0; j < global_N; ++j) {
+            if (i == j) {
+                (*matrix)[global_N * i + j] = (double)(global_N * (j % RANGE_MODULE));
             } else {
-                (*full_matrix_A)[global_matrix_row][global_matrix_column] =
-                        global_matrix_column % RANGE_MODULE;
+                (*matrix)[global_N * i + j] = (double)(j % RANGE_MODULE);
             }
         }
-    }
-}
-
-void FreeMatrix(double*** full_matrix_A) {
-    for (global_matrix_row = 0; global_matrix_row < global_N; global_matrix_row++) {
-        free((*full_matrix_A)[global_matrix_row]);
-    }
-    free(*full_matrix_A);
-}
-
-void AllocateMatrix(double*** full_matrix_A, int num_rows) {
-    *full_matrix_A = (double** )malloc(num_rows * sizeof(double*));
-    for (int i = 0; i < num_rows; ++i) {
-        (*full_matrix_A)[i] = (double*)malloc(global_N * sizeof(double));
     }
 }
 
@@ -98,16 +83,12 @@ void SubtractVectorFromVector (const double* minuend_vector, const double* subtr
     }
 }
 
-void MultiplyLocalMatrixToVector(int local_matrix_rows_count, double** local_matrix_A,
-                                    const double* vector, double* res_vector) {
-    FillVector(&res_vector, FILL_WITH_ZEROS, local_matrix_rows_count);
-
-    for (int local_matrix_row_iter = 0; local_matrix_row_iter <
-    local_matrix_rows_count; ++local_matrix_row_iter) {
-
-        for (int vector_row_iter = 0; vector_row_iter < global_N; ++vector_row_iter) {
-            res_vector[local_matrix_row_iter] +=
-                    local_matrix_A[local_matrix_row_iter][vector_row_iter] * vector[vector_row_iter];
+void MultiplyLocalMatrixToVector(int mtx_rows_count, const double* local_matrix_A,
+                                 const double* vector, double* res_vector) {
+    FillVector(&res_vector, FILL_WITH_ZEROS, mtx_rows_count);
+    for (int i = 0; i < mtx_rows_count; ++i) {
+        for (int j = 0; j < global_N; ++j) {
+            res_vector[i] += local_matrix_A[i * global_N + j] * vector[j];
         }
     }
 }
@@ -120,9 +101,9 @@ double ScalarProduct(const double* vector_1, const double* vector_2) {
     return product;
 }
 
-void MultiplyVectorToScalar(const double* vector, double* res_vector, double scalar) {
+void MultiplyVectorToScalar(double* vector, double scalar) {
     for (int iter = 0; iter < global_N; ++iter) {
-        res_vector[iter] = vector[iter] * scalar;
+        vector[iter] *= scalar;
     }
 }
 
@@ -137,69 +118,72 @@ void CopyVector(const double* vector, double* vectors_copy, int vectors_length) 
 int SequentialProgram() {
     printf("Sequential program started\n");
 
-    double** matrixA;
+    double* matrix_A;
     int local_matrix_rows_count = global_N;
-    AllocateMatrix( &matrixA, local_matrix_rows_count);
-    FillMatrix(&matrixA);
+    AllocateMatrixContinuously(&matrix_A, local_matrix_rows_count);
+    FillContinuousMatrix(&matrix_A);
 
-    double* vectorXn;
-    AllocateVector(&vectorXn, local_matrix_rows_count);
-    FillVector(&vectorXn, FILL_WITH_ZEROS, local_matrix_rows_count);
+    if (matrix_A == NULL) {
+        perror("Failed to allocate matrix!\n");
+        return 1;
+    }
 
-    double* vectorB;
-    AllocateVector(&vectorB, global_N);
-    FillVector(&vectorB, FILL_RANDOM, global_N);
-    vectorB[global_N - 1] += global_N * 2; // diagonal dominance of the augmented matrix
+    double* vector_Xn;
+    AllocateVector(&vector_Xn, local_matrix_rows_count);
+    FillVector(&vector_Xn, FILL_WITH_ZEROS, local_matrix_rows_count);
+
+    double* vector_B;
+    AllocateVector(&vector_B, global_N);
+    FillVector(&vector_B, FILL_RANDOM, global_N);
+    vector_B[global_N - 1] += global_N * 2; // diagonal dominance of the augmented matrix
     // of a system of linear equations. Constant 2 here means nothing - it can be easily
     // replaced by any other integer
 
-    double* vectorAXn;
-    AllocateVector(&vectorAXn, local_matrix_rows_count);
+    double* vector_AXn;
+    AllocateVector(&vector_AXn, local_matrix_rows_count);
 
-    double* vectorYn;
-    AllocateVector(&vectorYn, local_matrix_rows_count);
+    double* vector_Yn;
+    AllocateVector(&vector_Yn, local_matrix_rows_count);
 
-    double* vectorAYn;
-    AllocateVector(&vectorAYn, local_matrix_rows_count);
+    double* vector_AYn;
+    AllocateVector(&vector_AYn, local_matrix_rows_count);
 
     double tauN;
 
-    double* vectorXnPlus1;
-    AllocateVector(&vectorXnPlus1, local_matrix_rows_count);
+    double* vector_Xn_plus_1;
+    AllocateVector(&vector_Xn_plus_1, local_matrix_rows_count);
     double stop_criteria_value = STOP_CRITERIA_INIT_VALUE;
 
-    double* vectorTauYn;
-    AllocateVector(&vectorTauYn, local_matrix_rows_count);
     double start = MPI_Wtime();
     unsigned long long iterations_count = 0;
 
     //------------------------------------------------------------------------------------------------------------------
     //------------------------------------------------------------------------------------------------------------------
     while (stop_criteria_value >= epsilon && iterations_count < ITERATIONS_COUNT_ALLOWED) {
-        //----------------------------------------vectorXnPlus1-calculation---------------------------------------------
-        MultiplyLocalMatrixToVector(global_N, matrixA,
-                                    vectorXn, vectorAXn); // matrixA * vectorXn = vectorAXn
+        //----------------------------------------vector_Xn_plus_1-calculation---------------------------------------------
+        MultiplyLocalMatrixToVector(global_N, matrix_A,
+                                    vector_Xn, vector_AXn); // matrix_A * vector_Xn = vector_AXn
 
-        SubtractVectorFromVector(vectorAXn, vectorB,
-                                 vectorYn, local_matrix_rows_count);
-        //vectorYn = matrixA * vectorXn - vectorB
+        SubtractVectorFromVector(vector_AXn, vector_B,
+                                 vector_Yn, local_matrix_rows_count);
+        //vector_Yn = matrix_A * vector_Xn - vector_B
 
-        MultiplyLocalMatrixToVector(local_matrix_rows_count, matrixA,
-                                    vectorYn, vectorAYn); // matrixA * vectorYn = AYn
+        MultiplyLocalMatrixToVector(local_matrix_rows_count, matrix_A,
+                                    vector_Yn, vector_AYn); // matrix_A * vector_Yn = AYn
 
-        tauN = (ScalarProduct(vectorYn, vectorAYn)) /
-               (ScalarProduct(vectorAYn, vectorAYn)); // tauN = (Yn, AYn) / (AYn, AYn)
+        tauN = (ScalarProduct(vector_Yn, vector_AYn)) /
+               (ScalarProduct(vector_AYn, vector_AYn)); // tauN = (Yn, AYn) / (AYn, AYn)
 
-        MultiplyVectorToScalar(vectorYn, vectorTauYn, tauN); // counting vectorTauYn
+        stop_criteria_value = ScalarProduct(vector_Yn, vector_Yn) /
+                              ScalarProduct(vector_B, vector_B); // |AXn - vector_B|^2 / |vector_B|^2
 
-        SubtractVectorFromVector(vectorXn, vectorTauYn,vectorXnPlus1,
-                                 local_matrix_rows_count); // vectorXnPlus1 = vectorXn - vectorTauYn
+        MultiplyVectorToScalar(vector_Yn, tauN); // counting vector_tau_Yn
+
+        SubtractVectorFromVector(vector_Xn, vector_Yn, vector_Xn_plus_1,
+                                 local_matrix_rows_count); // vector_Xn_plus_1 = vector_Xn - vector_tau_Yn
         //---------------------------------------stop-flag-counting-and-checking----------------------------------------
-
-        stop_criteria_value = ScalarProduct(vectorYn, vectorYn) /
-                              ScalarProduct(vectorB, vectorB); // |AXn - vectorB|^2 / |vectorB|^2
         iterations_count++;
-        CopyVector(vectorXnPlus1, vectorXn, local_matrix_rows_count);
+        CopyVector(vector_Xn_plus_1, vector_Xn, local_matrix_rows_count);
     }
     if (iterations_count < ITERATIONS_COUNT_ALLOWED && stop_criteria_value < epsilon) {
         printf("SLE solved!\n");
@@ -213,14 +197,13 @@ int SequentialProgram() {
     double end = MPI_Wtime();
     printf("Time = %f seconds\n%lld iterations\n", end - start, iterations_count);
 
-    free(vectorXn);
-    free(vectorB);
-    free(vectorAXn);
-    free(vectorYn);
-    free(vectorAYn);
-    free(vectorXnPlus1);
-    free(vectorTauYn);
-    FreeMatrix(&matrixA);
+    free(vector_Xn);
+    free(vector_B);
+    free(vector_AXn);
+    free(vector_Yn);
+    free(vector_AYn);
+    free(vector_Xn_plus_1);
+    free(matrix_A);
     return 0;
 }
 //======================================================================================================================
@@ -230,27 +213,128 @@ int ParallelProgram(int rank) {
     printf("Parallel program started\n");
     int ranks_count;
     MPI_Comm_size(MPI_COMM_WORLD, &ranks_count);
+
     int* rank_rows_manager = (int*) malloc (ranks_count * sizeof(int));
-    int* rank_elements_counts = (int*) malloc (ranks_count * sizeof (int*));
-    int* displaces = (int*) malloc (ranks_count * sizeof (int*));
 
     for (int iter = 0; iter < ranks_count; ++iter) {
         rank_rows_manager[iter] = global_N / ranks_count + (iter < global_N % ranks_count);
     }
+
+    double* local_matrix_A;
+    int local_matrix_rows_count = rank_rows_manager[rank];
+    AllocateMatrixContinuously(&local_matrix_A, local_matrix_rows_count);
+
+    double* vector_B;
+    AllocateVector(&vector_B, global_N);
+
+    double* full_matrix_A = NULL;
+    if (rank == 0) {
+        AllocateMatrixContinuously(&full_matrix_A, global_N);
+        if (full_matrix_A == NULL) {
+            perror("Failed to allocate matrix!\n");
+            free(rank_rows_manager);
+            free(vector_B);
+            free(full_matrix_A);
+            return 1;
+        }
+        FillContinuousMatrix(&full_matrix_A);
+        FillVector(&vector_B, FILL_RANDOM, global_N);
+    }
+
+    int* counts_rank_elements = (int*) malloc (ranks_count * sizeof (int));
+    int* displaces = (int*) malloc (ranks_count * sizeof (int));
+
     for (int iter = 0; iter < ranks_count; ++iter) {
-        rank_elements_counts[iter] = rank_rows_manager[iter] * global_N;
+        counts_rank_elements[iter] = rank_rows_manager[iter] * global_N;
     }
     for (int iter = 0; iter < ranks_count; ++iter) {
         if (iter == 0) {
             displaces[iter] = 0;
         } else {
-            displaces[iter] = displaces[iter - 1] + rank_elements_counts[iter - 1]
+            displaces[iter] = displaces[iter - 1] + counts_rank_elements[iter - 1];
         }
     }
 
+    double* vector_Xn;
+    AllocateVector(&vector_Xn, local_matrix_rows_count);
+    FillVector(&vector_Xn, FILL_WITH_ZEROS, local_matrix_rows_count);
+
+    double* vector_AXn;
+    AllocateVector(&vector_AXn, local_matrix_rows_count);
+
+    double* vector_Yn;
+    AllocateVector(&vector_Yn, local_matrix_rows_count);
+
+    double* vector_AYn;
+    AllocateVector(&vector_AYn, local_matrix_rows_count);
+
+    double tau;
+
+    double* vector_Xn_plus_1;
+    AllocateVector(&vector_Xn_plus_1, local_matrix_rows_count);
+
+
+    MPI_Scatterv(full_matrix_A,
+                 counts_rank_elements,
+                 displaces,
+                 MPI_DOUBLE,
+                 local_matrix_A,
+                 counts_rank_elements[rank],
+                 MPI_DOUBLE,
+                 ROOT_PROCESS_NUMBER,
+                 MPI_COMM_WORLD);
+
+    MPI_Bcast(vector_B, global_N, MPI_DOUBLE, ROOT_PROCESS_NUMBER, MPI_COMM_WORLD);
+
+    double start = MPI_Wtime();
+    unsigned long long iterations_count = 0;
+    double stop_criteria_value = STOP_CRITERIA_INIT_VALUE;
+
+    while (stop_criteria_value >= epsilon && iterations_count < ITERATIONS_COUNT_ALLOWED) {
+        //----------------------------------------vector_Xn_plus_1-calculation---------------------------------------------
+        MultiplyLocalMatrixToVector(global_N, local_matrix_A,
+                                    vector_Xn, vector_AXn); // matrix_A * vector_Xn = vector_AXn
+
+        SubtractVectorFromVector(vector_AXn, vector_B,
+                                 vector_Yn, local_matrix_rows_count);
+        //vector_Yn = matrix_A * vector_Xn - vector_B
+
+        MultiplyLocalMatrixToVector(local_matrix_rows_count, local_matrix_A,
+                                    vector_Yn, vector_AYn); // matrix_A * vector_Yn = AYn
+
+        tau = (ScalarProduct(vector_Yn, vector_AYn)) /
+               (ScalarProduct(vector_AYn, vector_AYn)); // tauN = (Yn, AYn) / (AYn, AYn)
+
+        stop_criteria_value = ScalarProduct(vector_Yn, vector_Yn) /
+                              ScalarProduct(vector_B, vector_B); // |AXn - vector_B|^2 / |vector_B|^2
+
+        MultiplyVectorToScalar(vector_Yn, tau); // counting vector_tau_Yn
+
+        SubtractVectorFromVector(vector_Xn, vector_Yn, vector_Xn_plus_1,
+                                 local_matrix_rows_count); // vector_Xn_plus_1 = vector_Xn - vector_tau_Yn
+        //---------------------------------------stop-flag-counting-and-checking----------------------------------------
+        iterations_count++;
+        CopyVector(vector_Xn_plus_1, vector_Xn, local_matrix_rows_count);
+    }
+    if (iterations_count < ITERATIONS_COUNT_ALLOWED && stop_criteria_value < epsilon) {
+        printf("SLE solved!\n");
+    } else {
+        printf("The SLE can't be solved by this iteration method. "
+               "Too many iterations. Try to increase diagonal dominance.\n");
+    }
+
     free(rank_rows_manager);
-    free(rank_elements_counts);
+    free(counts_rank_elements);
     free(displaces);
+    if (rank == 0) {
+        free(full_matrix_A);
+    }
+    free(vector_Xn);
+    free(vector_B);
+    free(vector_AXn);
+    free(vector_Yn);
+    free(vector_AYn);
+    free(vector_Xn_plus_1);
     return 0;
 }
 //======================================================================================================================
