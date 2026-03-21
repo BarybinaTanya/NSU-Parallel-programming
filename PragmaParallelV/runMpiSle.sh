@@ -1,9 +1,17 @@
+source /opt/intel/oneapi/setvars.sh
+
 PROCS=$1
-EPSIL=$4
 SIZE=$2
 MODE=$3
-echo "Compiling..."
-mpicc main.c -o main
+EPSIL=$4
 
-echo "Running: mpirun -np $PROCS ./main $MODE $SIZE $EPSIL"
-mpirun -np $PROCS ./main $MODE $SIZE $EPSIL
+echo "Compiling with Intel MPI..."
+mpiicc main.c -o main
+
+echo "Running: mpirun -trace -np $PROCS ./main $MODE $SIZE $EPSIL"
+mpirun -trace -np $PROCS ./main $MODE $SIZE $EPSIL
+
+if [ -n "$DISPLAY" ]; then
+    echo "Launching trace_analyzer..."
+    traceanalyzer main.stf
+else
