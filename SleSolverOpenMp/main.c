@@ -1,19 +1,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <mpi.h>
+#include <omp.h>
 
 #define RANGE_MODULE 100
-#define HARDEN_MATRIX_TRACE 1.0005
-#define ROOT_PROCESS_NUMBER 0
-#define TRUE 0
+#define HARDEN_MATRIX_TRACE 1000
+#define SUCCESS 0
 #define NUMBER_SYSTEM_BASE_10 10
 #define FILL_WITH_ZEROS 0
 #define FILL_RANDOM 1
-#define STOP_CRITERIA_INIT_VALUE 100
+#define TRUE 1
 #define EPSILON_DEFAULT_VALUE 0.00001
 #define GLOBAL_N_DEFAULT_VALUE 10000
-#define ITERATIONS_PER_PROCESS_ALLOWED 10000
+#define ITERATIONS_PER_PROCESS_ALLOWED 1000000
+#define CHUNK_SIZE_DEFAULT_VALUE 1
 
 double epsilon;
 int global_N;
@@ -50,23 +50,6 @@ void FillContinuousMatrix(double** matrix) {
     }
 }
 
-void SubtractVectorFromVector(const double* minuend_vector, const double* subtrahend_vector,
-                              double* res_vector, int vectors_size) {
-    for (int i = 0; i < vectors_size; ++i) {
-        res_vector[i] = minuend_vector[i] - subtrahend_vector[i];
-    }
-}
-
-void MultiplyLocalMatrixToVector(int mtx_rows_count, const double* matrix,
-                                 const double* vector, double* res_vector) {
-    for (int i = 0; i < mtx_rows_count; ++i) {
-        res_vector[i] = 0.0;
-        for (int j = 0; j < global_N; ++j) {
-            res_vector[i] += matrix[i * global_N + j] * vector[j];
-        }
-    }
-}
-
 double ScalarProduct(const double* vector_1, const double* vector_2) {
     double product = 0;
     for (int i = 0; i < global_N; ++i) {
@@ -75,24 +58,11 @@ double ScalarProduct(const double* vector_1, const double* vector_2) {
     return product;
 }
 
-void MultiplyVectorToScalar(double* vector, double scalar) {
-    for (int i = 0; i < global_N; ++i) {
-        vector[i] *= scalar;
-    }
-}
-
-void CopyVectorsValueToOtherVector(const double* vector, double* other_vectors, int vectors_length) {
-    for (int i = 0; i < vectors_length; ++i) {
-        other_vectors[i] = vector[i];
-    }
-}
-
-int SequentialProgram() {
-    printf("Sequential program started\n");
+int ParallelProgramScheduleStatic(char* keyword) {
+    printf("Parallel schedule static program started\n");
 
     double* matrix_A;
-    int local_matrix_rows_count = global_N;
-    AllocateMatrixContinuously(&matrix_A, local_matrix_rows_count);
+    AllocateMatrixContinuously(&matrix_A, global_N);
     FillContinuousMatrix(&matrix_A);
 
     if (matrix_A == NULL) {
@@ -100,34 +70,34 @@ int SequentialProgram() {
         return 1;
     }
 
-    double* vector_Xn = NULL;
-    AllocateVector(&vector_Xn, local_matrix_rows_count);
+    double* vector_Xn;
+    AllocateVector(&vector_Xn, global_N);
     if (vector_Xn == NULL) {
         perror("Failed to allocate vector_Xn!\n");
         free(matrix_A);
         return 1;
     }
-    FillVector(&vector_Xn, FILL_WITH_ZEROS, local_matrix_rows_count);
+    FillVector(&vector_Xn, FILL_WITH_ZEROS, global_N);
 
     double* vector_B;
     AllocateVector(&vector_B, global_N);
     if (vector_B == NULL) {
         perror("Failed to allocate vector_B!\n");
-        free(vector_Xn);
-        free(matrix_A);
+        free(vector_Xn); free(matrix_A);
         return 1;
     }
     FillVector(&vector_B, FILL_RANDOM, global_N);
     vector_B[global_N - 1] += (double)(global_N * HARDEN_MATRIX_TRACE);
 
     double* vector_AXn = NULL;
-    AllocateVector(&vector_AXn, local_matrix_rows_count);
+    AllocateVector(&vector_AXn, global_N);
     double* vector_Yn = NULL;
-    AllocateVector(&vector_Yn, local_matrix_rows_count);
+    AllocateVector(&vector_Yn, global_N);
     double* vector_AYn = NULL;
-    AllocateVector(&vector_AYn, local_matrix_rows_count);
+    AllocateVector(&vector_AYn, global_N);
     double* vector_Xn_plus_1 = NULL;
-    AllocateVector(&vector_Xn_plus_1, local_matrix_rows_count);
+    AllocateVector(&vector_Xn_plus_1, global_N);
+    double scalar_product_Yn_AYn = 0, scalar_product_AYn_AYn = 0, scalar_product_Yn_Yn = 0;
 
     if (vector_AXn == NULL || vector_Yn == NULL || vector_AYn == NULL || vector_Xn_plus_1 == NULL) {
         perror("Failed to allocate vectors!\n");
@@ -136,114 +106,189 @@ int SequentialProgram() {
         return 1;
     }
 
-    double stop_criteria_value = STOP_CRITERIA_INIT_VALUE;
-    double start = MPI_Wtime();
-    double time_out = 0;
+    double norm_B_sq = 0;
+
+    double stop_criteria_value;
     unsigned long long iterations_count = 0;
+    double time_out;
+    int chunk_size = omp_get_num_threads();
+    int done = 0;
+    double start = omp_get_wtime();
 
-    while (stop_criteria_value >= epsilon &&
-           iterations_count < ITERATIONS_PER_PROCESS_ALLOWED &&
-           time_out - start < 40) {
-        MultiplyLocalMatrixToVector(global_N, matrix_A, vector_Xn, vector_AXn);
-        SubtractVectorFromVector(vector_AXn, vector_B,
-                                 vector_Yn, local_matrix_rows_count);
-        MultiplyLocalMatrixToVector(local_matrix_rows_count, matrix_A,
-                                    vector_Yn, vector_AYn);
+#pragma omp parallel
+    {
+        double tauN;
+#pragma omp for reduction(+: norm_B_sq) schedule(static, chank_size)
+        for (int i = 0; i < global_N; ++i) {
+            norm_B_sq += vector_B[i] * vector_B[i];
+        }
+        while (TRUE) {
+            // AXn
+#pragma omp for schedule(static, chunk_size)
+            for (int i = 0; i < global_N; ++i) {
+                double sum = 0.0;
+                for (int j = 0; j < global_N; ++j) {
+                    sum += matrix_A[i * global_N + j] * vector_Xn[j];
+                }
+                vector_AXn[i] = sum;
+            }
 
-        double tauN = ScalarProduct(vector_Yn, vector_AYn) /
-                      ScalarProduct(vector_AYn, vector_AYn);
-        stop_criteria_value = ScalarProduct(vector_Yn, vector_Yn) /
-                              ScalarProduct(vector_B, vector_B);
+            // Yn = AXn - B
+#pragma omp for schedule(static, chunk_size)
+            for (int i = 0; i < global_N; ++i) {
+                vector_Yn[i] = vector_AXn[i] - vector_B[i];
+            }
 
-        MultiplyVectorToScalar(vector_Yn, tauN);
-        SubtractVectorFromVector(vector_Xn, vector_Yn,
-                                 vector_Xn_plus_1, local_matrix_rows_count);
-        iterations_count++;
-        time_out = MPI_Wtime();
-        CopyVectorsValueToOtherVector(vector_Xn_plus_1, vector_Xn,
-                                      local_matrix_rows_count);
-    }
+            // AYn
+#pragma omp for schedule(static, chunk_size)
+            for (int i = 0; i < global_N; ++i) {
+                double sum = 0.0;
+                double* row = matrix_A + i * global_N;
+                for (int j = 0; j < global_N; ++j) {
+                    sum += row[j] * vector_Yn[j];
+                }
+                vector_AYn[i] = sum;
+            }
 
-    double end = MPI_Wtime();
-    if (iterations_count < ITERATIONS_PER_PROCESS_ALLOWED && stop_criteria_value < epsilon &&
-        time_out - start <= 40.0)
+#pragma omp for reduction(+:scalar_product_Yn_AYn, scalar_product_AYn_AYn, scalar_product_Yn_Yn) schedule(static, chunk_size)
+            for (int i = 0; i < global_N; ++i) {
+                scalar_product_Yn_AYn += vector_Yn[i] * vector_AYn[i];
+                scalar_product_AYn_AYn += vector_AYn[i] * vector_AYn[i];
+                scalar_product_Yn_Yn += vector_Yn[i] * vector_Yn[i];
+            }
+
+#pragma omp single
+            {
+                tauN = scalar_product_Yn_AYn / scalar_product_AYn_AYn;
+                stop_criteria_value = scalar_product_Yn_Yn / norm_B_sq;
+                time_out = omp_get_wtime();
+                if (stop_criteria_value < epsilon || iterations_count >= ITERATIONS_PER_PROCESS_ALLOWED ||
+                time_out - start > 5.0) {
+                    done = 1;
+                } else {
+                    iterations_count++;
+                }
+                scalar_product_Yn_AYn = 0;
+                scalar_product_AYn_AYn = 0;
+                scalar_product_Yn_Yn = 0;
+            }
+
+            // Yn * tauN
+#pragma omp for schedule(static, chunk_size)
+            for (int i = 0; i < global_N; ++i) {
+                vector_Yn[i] *= tauN;
+            }
+
+            // Xn+1 = Xn - tau*Yn
+#pragma omp for schedule(static, chunk_size)
+            for (int i = 0; i < global_N; ++i) {
+                vector_Xn_plus_1[i] = vector_Xn[i] - vector_Yn[i];
+            }
+
+            // Xn = Xn+1
+#pragma omp single
+            {
+                double* tmp = vector_Xn;
+                vector_Xn = vector_Xn_plus_1;
+                vector_Xn_plus_1 = tmp;
+            }
+            if (done) {
+                break;
+            }
+        } // while
+    } // parallel
+
+    double end = omp_get_wtime();
+
+    if (iterations_count < ITERATIONS_PER_PROCESS_ALLOWED && stop_criteria_value < epsilon)
         printf("SLE solved!\n");
     else
-        printf("The SLE can't be solved by this iteration method. Too many iterations."
-               " Try to increase diagonal dominance.\n");
+        printf("The SLE can't be solved by this iteration method. Too many iterations.\n");
     printf("Time = %f seconds\n%lld iterations\n", end - start, iterations_count);
 
-    free(vector_Xn); free(vector_B);
-    free(vector_AXn); free(vector_Yn);
-    free(vector_AYn); free(vector_Xn_plus_1);
     free(matrix_A);
+    free(vector_B);
+    free(vector_Xn);
+    free(vector_Xn_plus_1);
+    free(vector_AXn);
+    free(vector_Yn);
+    free(vector_AYn);
+    printf("fuck 1");
     return 0;
 }
 
-int ParallelProgram(int rank) {
-    if (rank == 0) {
-        printf("Parallel program started\n");
-    }
+int ParallelProgramScheduleDynamic(int chunk_size) {
+    printf("Parallel schedule dynamic program started\n");
+
+    return SUCCESS;
+}
+
+int ParallelProgramScheduleGuided(int chunk_size) {
+    printf("Parallel schedule guided program started\n");
 
     return 0;
 }
 
 int main(int argc, char *argv[]) {
-    int rank;
-    MPI_Init(&argc, &argv);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    epsilon = EPSILON_DEFAULT_VALUE;
-
-    if (argc > 3) {
-        if (rank == ROOT_PROCESS_NUMBER) {
-            char *end;
-            double val = strtod(argv[3], &end);
-            if (end == argv[3] || *end != '\0')
-                epsilon = EPSILON_DEFAULT_VALUE;
-            else
-                epsilon = val;
+    int chunk_size = CHUNK_SIZE_DEFAULT_VALUE;
+    if (argc >= 5) {
+        char *end;
+        long val = strtol(argv[5], &end, NUMBER_SYSTEM_BASE_10);
+        if (end == argv[5] || *end != '\0' || val <= 0) {
+            printf("Invalid chunk size value, using default %d - argc\n", argc);
+        } else {
+            chunk_size = (int)val;
         }
     }
-    MPI_Bcast(&epsilon, 1, MPI_DOUBLE, ROOT_PROCESS_NUMBER, MPI_COMM_WORLD);
-
-    int default_N = GLOBAL_N_DEFAULT_VALUE;
-    if (argc > 2) {
-        if (rank == ROOT_PROCESS_NUMBER) {
-            char *end;
-            long val = strtol(argv[2], &end, NUMBER_SYSTEM_BASE_10);
-            if (end == argv[2] || *end != '\0' || val <= 0) {
-                printf("Invalid global_N value, using default %d\n", default_N);
-                global_N = default_N;
-            } else {
-                global_N = (int)val;
-            }
-        }
-    } else {
-        global_N = default_N;
+    if (argc >= 4) {
+        char *end;
+        double val = strtod(argv[4], &end);
+        if (end == argv[4] || *end != '\0')
+            epsilon = EPSILON_DEFAULT_VALUE;
+        else
+            epsilon = val;
     }
-    MPI_Bcast(&global_N, 1, MPI_INT, ROOT_PROCESS_NUMBER, MPI_COMM_WORLD);
 
     int ret = 0;
-    if (argc > 1) {
-        if (strcmp(argv[1], "-s") == TRUE) {
-            if (rank == ROOT_PROCESS_NUMBER) ret = SequentialProgram();
-        } else if (strcmp(argv[1], "-pp") == TRUE) {
-            ret = ParallelProgram(rank);
-        } else {
-            if (rank == ROOT_PROCESS_NUMBER) {
-                printf("Unknown flag. Usage:\n");
-                printf("  %s [global_N] -s           (sequential)\n", argv[0]);
-                printf("  %s [global_N] -pp          (point-to-point parallel)\n", argv[0]);
-                printf("      global_N - vector size (positive integer, default %d)\n", default_N);
-            }
+    if (argc > 3) {
+        if (strcmp(argv[3], "-s") == SUCCESS) {
+
+        } else if (strcmp(argv[3], "-ps") == SUCCESS) {
+            char keyword[] = "static";
+            ret = ParallelProgramScheduleStatic(keyword);
+        } else if (strcmp(argv[3], "-pd") == SUCCESS) {
+            char keyword[] = "dynamic";
+            ret = ParallelProgramScheduleStatic(keyword);
+        } else if (strcmp(argv[3], "-pg") == SUCCESS) {
+            char keyword[] = "guided";
+            ret = ParallelProgramScheduleStatic(keyword);
+        }
+        else {
+            printf("Unknown flag. Usage:\n");
+            printf("  %s [global_N] -s           (sequential)\n", argv[0]);
+            printf("  %s [global_N] -ps          (parallel with schedule static)\n", argv[0]);
+            printf("  %s [global_N] -pd          (parallel with schedule dynamic)\n", argv[0]);
+            printf("  %s [global_N] -pg          (parallel with schedule guided)\n", argv[0]);
+            printf("      global_N - vector size (positive integer, default %d)\n", GLOBAL_N_DEFAULT_VALUE);
         }
     } else {
-        if (rank == ROOT_PROCESS_NUMBER) {
-            printf("No flags specified. Running sequential by default.\n"
-                   "global_N is equal to %d\n", default_N);
-            ret = SequentialProgram();
-        }
+        printf("No flags specified. Running sequential by default.\n"
+               "global_N is equal to %d\n", GLOBAL_N_DEFAULT_VALUE);
+        ret = -1;
     }
-    MPI_Finalize();
+
+    if (argc > 2) {
+        char *end;
+        long val = strtol(argv[2], &end, NUMBER_SYSTEM_BASE_10);
+        if (end == argv[2] || *end != '\0' || val <= 0) {
+            printf("Invalid global_N value, using default %d\n", GLOBAL_N_DEFAULT_VALUE);
+            global_N = GLOBAL_N_DEFAULT_VALUE;
+        } else {
+            global_N = (int)val;
+        }
+    } else {
+        global_N = GLOBAL_N_DEFAULT_VALUE;
+    }
+
     return ret;
 }
